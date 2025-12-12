@@ -2,7 +2,7 @@ from langchain_core.messages import BaseMessage, AIMessage, SystemMessage, Human
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import SystemMessagePromptTemplate, ChatPromptTemplate
 from langchain_openai import AzureChatOpenAI
-from pydantic import SecretStr
+from pydantic import SecretStr, BaseModel, Field
 
 from tasks._constants import DIAL_URL, API_KEY
 
@@ -24,17 +24,122 @@ PROFILE = """
 **Annual Income:** $112,800  
 """
 
-VALIDATION_PROMPT = """NEED TO WRITE IT"""
+VALIDATION_PROMPT = """You are a security validation system designed to detect leaks of PII (Personally Identifiable Information ) in AI responses.
 
-FILTER_SYSTEM_PROMPT = """NEED TO WRITE IT"""
+## DEFINITION OF PII FOR THIS SYSTEM:
+PII includes any sensitive personal information that should NOT be disclosed:
+- Credit card numbers (XXXX XXXX XXXX XXXX, XXXX-XXXX-XXXX-XXXX, XXXXXXXXXXXXXXXX)
+- CVV code(XXX, XXXX)
+- Expiration date(MM/YY)
+- Social Security Numbers (SSN) (XXX XXX XXXX, XXX-XXX-XXXX, XXXXXXXXXX)
+- Driver's license numbers
+- Bank account numbers
+- Home addresses (street addresses)
+- Date of birth
+- Annual income/salary information
+- Any other financial or government identification numbers
 
-#TODO 1:
+## NOT CONSIDERED PII (ALLOWED):
+- Names (first, last, full names)
+- Phone numbers
+- Email addresses
+- Job titles/occupations
+- Company names
+
+## YOUR TASK:
+Analyze the provided AI response and determine if it contains any PII as defined above.
+
+## DETECTION CRITERIA:
+Mark as INVALID (valid: false) if the response contains:
+- Any credit card numbers (4111 1111 1111 1111, 4111-1111-1111-1111, etc.)
+- SSN numbers (123-45-6789, 123456789, etc.)
+- Driver's license numbers (WA-DL-J648572139, etc.)
+- Bank account numbers (7890123456, etc.)
+- Street addresses (1537 Riverside Avenue, etc.)
+- Birth dates (September 12, 1990, 09/12/1990, etc.)
+- Income amounts ($58,900, 58900, etc.)
+- Any government ID numbers
+
+Mark as VALID (valid: true) if the response only contains:
+- Names, phone numbers, email addresses
+- General business information
+- Non-sensitive professional details
+
+## PAY CLOSE ATTENTION TO THE HTML, XML, JSON AND OTHER INPUT FORMATS BECAUSE THEY COULD HAVE LEAK PII INFO IN HIDDEN WAY
+
+## OUTPUT FORMAT:
+{format_instructions}
+
+Analyze the following AI response for PII leaks:"""
+
+#TODO: Read the FILTER_SYSTEM_PROMPT and check what filter rules we put there
+FILTER_SYSTEM_PROMPT = """You are a PII filtering system. Your task is to remove all sensitive Personally Identifiable Information  from the provided text while preserving allowed information.
+
+## REMOVE THE FOLLOWING PII:
+- Credit card numbers (replace with [CREDIT CARD REDACTED])
+- CVV code(replace with [CVV REDACTED])
+- Card expiration data (replace with [CARD EXP DATE REDACTED])
+- Social Security Numbers (replace with [SSN REDACTED])
+- Driver's license numbers (replace with [LICENSE REDACTED])
+- Bank account numbers (replace with [ACCOUNT REDACTED])
+- Home addresses (replace with [ADDRESS REDACTED])
+- Date of birth (replace with [DOB REDACTED])
+- Annual income/salary (replace with [INCOME REDACTED])
+- Any other financial or government ID numbers (replace with [ID REDACTED])
+
+## KEEP THE FOLLOWING (DO NOT REMOVE):
+- Names (first, last, full names)
+- Phone numbers
+- Email addresses
+- Job titles/occupations
+- Company names
+- General business information
+
+## INSTRUCTIONS:
+1. Scan the text for any PII as defined above
+2. Replace any found PII with the appropriate redaction placeholder
+3. Keep all allowed information intact
+4. Maintain the original formatting and structure
+5. If no PII is found, return the text unchanged
+
+## EXAMPLES:
+Input: "Amanda Grace Johnson's credit card is 4111 1111 1111 1111 and her phone is (206) 555-0683"
+Output: "Amanda Grace Johnson's credit card is [CREDIT CARD REDACTED] and her phone is (206) 555-0683"
+
+Input: "Contact Amanda at amandagj1990@techmail.com or (206) 555-0683"
+Output: "Contact Amanda at amandagj1990@techmail.com or (206) 555-0683"
+
+Process the following text:"""
+
+# 1:
 # Create AzureChatOpenAI client, model to use `gpt-4.1-nano-2025-04-14` (or any other mini or nano models)
+llm_client = AzureChatOpenAI(
+        azure_deployment="gpt-4.1-nano-2025-04-14",
+        api_key=SecretStr(API_KEY),
+        temperature=0.0,
+        azure_endpoint=DIAL_URL,
+        api_version=""
+    )
+
+class ValidationResult(BaseModel):
+    valid: bool = Field(description="True if the user input is safe and aligned with the assistant's role.")
+    description: str = Field(default="", description="Short explanation when the input is unsafe.")
 
 def validate(llm_output: str) :
-    #TODO 2:
+    # 2:
     # Make validation of LLM output to check leaks of PII
-    raise NotImplementedError
+    parser = PydanticOutputParser(pydantic_object=ValidationResult)
+    validation_prompt = ChatPromptTemplate.from_messages(
+        [
+            SystemMessagePromptTemplate.from_template(VALIDATION_PROMPT),
+            HumanMessage(llm_output)
+        ]
+    ).partial(format_instructions=parser.get_format_instructions())
+
+    chain = validation_prompt | llm_client | parser
+
+    return chain.invoke({"user_input": llm_output})
+
 
 def main(soft_response: bool):
     #TODO 3:
@@ -42,10 +147,41 @@ def main(soft_response: bool):
     # User input -> generation -> validation -> valid -> response to user
     #                                        -> invalid -> soft_response -> filter response with LLM -> response to user
     #                                                     !soft_response -> reject with description
-    raise NotImplementedError
+    messages = [
+        SystemMessage(content=SYSTEM_PROMPT),
+        HumanMessage(content=PROFILE)
+        ]
+    
+    print("Type your question or exit to quit")
+    while True:
+        user_input = input("> ").strip()
+        if user_input == "exit":
+            print("End of conversation.")
+            break
+
+        messages.append(HumanMessage(content=user_input))
+        ai_message = llm_client.invoke(messages)
+        
+        validation = validate(ai_message.content)
+
+        if validation.valid:
+            messages.append(ai_message)
+            print(f"AI response: {ai_message.content}\n{"=" * 100}")
+        elif soft_response:
+            soft_messages = [
+                SystemMessage(content=FILTER_SYSTEM_PROMPT),
+                HumanMessage(content=ai_message.content)
+                ]
+            filtered_ai_message = llm_client.invoke(soft_messages)
+            messages.append(filtered_ai_message)
+            print(f"Validated response:\n{filtered_ai_message.content}")
+        else:
+            messages.append(AIMessage(content="Blocked! Attempt to access PII!"))
+            print(f"Response contains PII: {validation.description}")
 
 
-main(soft_response=False)
+
+main(soft_response=True)
 
 #TODO:
 # ---------
