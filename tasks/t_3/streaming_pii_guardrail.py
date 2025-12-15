@@ -12,22 +12,33 @@ from tasks._constants import DIAL_URL, API_KEY
 class PresidioStreamingPIIGuardrail:
 
     def __init__(self, buffer_size: int =100, safety_margin: int = 20):
-        #TODO:
         # 1. Create dict with language configurations: {"nlp_engine_name": "spacy","models": [{"lang_code": "en", "model_name": "en_core_web_sm"}]}
         #    Read more about it here: https://microsoft.github.io/presidio/tutorial/05_languages/
+        configuration = {
+            "nlp_engine_name": "spacy",
+            "models": [{"lang_code": "en", 
+                        "model_name": 
+                        "en_core_web_sm"}]
+                        }
         # 2. Create NlpEngineProvider with created configurations
+        provider = NlpEngineProvider(nlp_configuration=configuration)
         # 3. Create AnalyzerEngine, as `nlp_engine` crate engine by crated provider (will be used as obj var later)
+        nlp_engine = provider.create_engine()
+        self.analyzer = AnalyzerEngine(nlp_engine=nlp_engine)
         # 4. Create AnonymizerEngine (will be used as obj var later)
+        self.anonymizer = AnonymizerEngine()
         # 5. Create buffer as empty string (here we will accumulate chunks content and process it, will be used as obj var late)
+        self.buffer = ""
         # 6. Create buffer_size as `buffer_size` (will be used as obj var late)
+        self.buffer_size = buffer_size
         # 7. Create safety_margin as `safety_margin` (will be used as obj var late)
-        raise NotImplementedError
+        self.safety_margin = safety_margin
 
     def process_chunk(self, chunk: str) -> str:
-        #TODO:
         # 1. Check if chunk is present, if not then return chunk itself
+        if not chunk:
+            return chunk
         # 2. Accumulate chunk to `buffer`
-
         if len(self.buffer) > self.buffer_size:
             safe_length = len(self.buffer) - self.safety_margin
             for i in range(safe_length - 1, max(0, safe_length - 20), -1):
@@ -37,25 +48,37 @@ class PresidioStreamingPIIGuardrail:
 
             text_to_process = self.buffer[:safe_length]
 
-            #TODO:
             # 1. Get results with analyzer by method analyze, text is `text_to_process`, language is 'en'
+            results = self.analyzer.analyze(
+                text=text_to_process, 
+                language='en'
+                )
             # 2. Anonymize content, use anonymizer method anonymize with such params:
             #       - text=text_to_process
             #       - analyzer_results=results
+            anonymized_content = self.anonymizer.anonymize(
+                text=text_to_process, 
+                analyzer_results=results
+                )
             # 3. Set `buffer` as `buffer[safe_length:]`
+            self.buffer = self.buffer[safe_length:]
             # 4. Return anonymized text
-            raise NotImplementedError
-
+            return anonymized_content.text
+            
         return ""
 
     def finalize(self) -> str:
-        #TODO:
         # 1. Check if `buffer` is present, otherwise return empty string
+        if not self.buffer:
+            return ""
         # 2. Analyze `buffer`
+        result = self.analyzer.analyze(text=self.buffer, language='en')
         # 3. Anonymize `buffer` with analyzed results
+        anonymized = self.anonymizer.anonymize(text=self.buffer, analyzer_results=result)
         # 4. Set `buffer` as empty string
+        self.buffer = ""
         # 5. Return anonymized text
-        raise NotImplementedError
+        return anonymized.text
 
 
 class StreamingPIIGuardrail:
@@ -194,13 +217,50 @@ PROFILE = """
 
 #TODO:
 # Create AzureChatOpenAI client, model to use `gpt-4.1-nano-2025-04-14` (or any other mini or nano models)
+llm_client = AzureChatOpenAI(
+        azure_deployment="gpt-4.1-nano-2025-04-14",
+        api_key=SecretStr(API_KEY),
+        temperature=0.0,
+        azure_endpoint=DIAL_URL,
+        api_version="",
+        streaming=True
+    )
 
 def main():
-    #TODO:
     # 1. Create PresidioStreamingPIIGuardrail or StreamingPIIGuardrail
+    guardrail = StreamingPIIGuardrail()
     # 2. Create list of messages with system prompt and profile
+    messages = [
+        SystemMessage(content=SYSTEM_PROMPT),
+        HumanMessage(content=PROFILE)
+    ]
     # 3. Create console chat with LLM, preserve history there and while streaming filter content with streaming guardrail
-    raise NotImplementedError()
+    print("Type your question or exit to quit")
+    while True:
+        user_input = input("> ").strip()
+        if user_input == "exit":
+            print("End of conversation.")
+            break
+
+        messages.append(HumanMessage(content=user_input))
+        print(f"Assistant: ", end="", flush=True)
+
+        response = ""
+
+        for chunk in llm_client.stream(messages):
+            if chunk.content:
+                safe_chunk = guardrail.process_chunk(chunk.content)
+                if safe_chunk:
+                    print(safe_chunk, end="", flush=True)
+                    response += safe_chunk
+
+        final_chunk = guardrail.finalize()
+        if final_chunk:
+            print(final_chunk, end="", flush=True)
+            response += final_chunk
+
+        messages.append(AIMessage(content=response))
+
 
 
 
