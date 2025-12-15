@@ -215,7 +215,6 @@ PROFILE = """
 **Annual Income:** $112,800  
 """
 
-#TODO:
 # Create AzureChatOpenAI client, model to use `gpt-4.1-nano-2025-04-14` (or any other mini or nano models)
 llm_client = AzureChatOpenAI(
         azure_deployment="gpt-4.1-nano-2025-04-14",
